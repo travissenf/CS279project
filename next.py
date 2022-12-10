@@ -4,6 +4,8 @@ import copy
 import numpy as np
 import random
 
+from scipy import ndimage
+
 import torch
 from torch import nn
 from torch import optim
@@ -26,30 +28,21 @@ from torch.utils.data import DataLoader
 
 # Loading and normalizing the data.
 # Define transformations for the training and test sets
+
+
+def newTransform(X):
+    X = cv2.resize(X, (int(X.shape[1] * 0.8), int(X.shape[0] * 0.8)))
+    return X - cv2.GaussianBlur(X, (21, 21), 3) + 127
+
+
 train_transforms = A.Compose([
     A.SmallestMaxSize(max_size=350),
-    A.ShiftScaleRotate(shift_limit=0.05,
-                       scale_limit=0.05,
-                       rotate_limit=360,
-                       p=0.5),
-    A.RandomCrop(height=256, width=256),
-    A.RGBShift(r_shift_limit=15, g_shift_limit=15, b_shift_limit=15, p=0.5),
-    A.RandomBrightnessContrast(p=0.5),
-    A.MultiplicativeNoise(multiplier=[0.5, 2], per_channel=True, p=0.2),
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    A.HueSaturationValue(hue_shift_limit=0.2,
-                         sat_shift_limit=0.2,
-                         val_shift_limit=0.2,
-                         p=0.5),
-    A.RandomBrightnessContrast(brightness_limit=(-0.1, 0.1),
-                               contrast_limit=(-0.1, 0.1),
-                               p=0.5),
     ToTensorV2(),
 ])
 
 test_transforms = A.Compose([
     A.SmallestMaxSize(max_size=350),
-    A.CenterCrop(height=256, width=256),
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ToTensorV2(),
 ])
@@ -87,8 +80,8 @@ for data_path in glob.glob(test_data_path + '\*'):
 
 test_image_paths = list(flatten(test_image_paths))
 
-batch_size = 32
-number_of_labels = 32
+batch_size = 5
+number_of_labels = 5
 
 classes = ('EOSINOPHIL', 'LYMPHOCYTE', 'MONOCYTE', 'NEUTROPHIL')
 
@@ -112,6 +105,7 @@ class MySet(Dataset):
 
         label = image_filepath.split('\\')[-2]
         label = class_to_idx[label]
+        image = newTransform(image)
         if self.transform is not None:
             image = self.transform(image=image)["image"]
         return image, label
@@ -158,7 +152,7 @@ class Network(nn.Module):
                                stride=1,
                                padding=1)
         self.bn5 = nn.BatchNorm2d(24)
-        self.fc1 = nn.Linear(357216, 4)
+        self.fc1 = nn.Linear(920712, 4)
 
     def forward(self, input):
         output = F.relu(self.bn1(self.conv1(input)))
@@ -166,7 +160,7 @@ class Network(nn.Module):
         output = self.pool(output)
         output = F.relu(self.bn4(self.conv4(output)))
         output = F.relu(self.bn5(self.conv5(output)))
-        output = output.view(-1, 357216)
+        output = output.view(-1, 920712)
         output = self.fc1(output)
 
         return output
@@ -180,12 +174,39 @@ optimizer = Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
 
 
 def saveModel():
-    path = "./myFirstModel.pth"
+    path = "./HPModel.pth"
     torch.save(model.state_dict(), path)
 
 
 # Function to test the model with the test dataset and print the accuracy for the test images
 def testAccuracy():
+
+    model.eval()
+    accuracy = 0.0
+    total = 0.0
+
+    count = 0
+
+    with torch.no_grad():
+        for data in train_loader:
+            if count > 100:
+                break
+            images, labels = data
+            # run the model on the test set to predict labels
+            outputs = model(images)
+            # the label with the highest energy will be our prediction
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            accuracy += (predicted == labels).sum().item()
+            count += 1
+            print(count)
+
+    # compute the accuracy over all test images
+    accuracy = (100 * accuracy / total)
+    return (accuracy)
+
+
+def trainAccuracy():
 
     model.eval()
     accuracy = 0.0
@@ -222,7 +243,6 @@ def train(num_epochs):
         running_acc = 0.0
 
         for i, (images, labels) in enumerate(train_loader, 0):
-
             # get the inputs
             images = Variable(images.to(device))
             labels = Variable(labels.to(device))
@@ -240,7 +260,7 @@ def train(num_epochs):
 
             # Let's print statistics for every 1,000 images
             running_loss += loss.item()  # extract the loss value
-            if i % 1000 == 999:
+            if i % 100 == 99:
                 # print every 1000 (twice per epoch)
                 print('[%d, %5d] loss: %.3f' %
                       (epoch + 1, i + 1, running_loss / 1000))
@@ -297,12 +317,13 @@ if __name__ == "__main__":
     #print('Finished Training')
 
     # Test which classes performed well
-    testAccuracy()
+    #trainAccuracy()
 
     # Let's load the model we just created and test the accuracy per label
-    model = Network()
-    path = "myFirstModel.pth"
+    # model = Network()
+    path = "HPModel.pth"
     model.load_state_dict(torch.load(path))
+    print(testAccuracy())
 
     # Test with batch of images
     testBatch()
